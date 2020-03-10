@@ -149,17 +149,26 @@ proc onChar(window: GLFWWindow, codepoint: uint32, mods: int32): void {.cdecl.}=
   currentInput.add(rune)
   cursor += 1
 
-proc drawInfo()=
+proc drawInfo(width : float32)=
+  ##Draws information about the command to ease use
   if(currentInput.len > 1):
     var command = getCommand()
     if(hasOptions()): command = viableCommands[selected].words[0].text
     var args = getInfo(command)
     if(args.len > 1):
+      igBeginChild("info",ImVec2(x: width - igGetFontSize(), y: ((args.len.toFloat + 4) * igGetFontSize())),true)
       drawAnsiText(args[1..args.high])
+      igEndChild()
 
 proc drawOptions()=
+  ##Draws path directiories, and auto complete
   if(hasOptions() and currentInput.len > 1):
     viableCommands[selected].words[0].selected = true
+    var height = (viableCommands.len.toFloat() + 1) * igGetFontSize() + igGetFontSize() / 2
+    dropHeight = min(height,maxDrop.toFloat * igGetFontSize() + igGetFontSize() / 2)
+    #Get Max Width
+    for x in viableCommands:
+        dropWidth = max(x.words[0].text.len.toFloat * igGetFontSize() * 0.75,dropWidth)
     #Get small segment to draw, else draw everything
     if(viableCommands.len > maxDrop):
       var toDraw : seq[StyleLine]
@@ -170,7 +179,8 @@ proc drawOptions()=
     else: drawAnsiText(viableCommands)
 
 proc drawImage(selectedPath : string, width : float32,flag : ImGuiWindowFlags)=
-   #Load image if it changes
+  ##Draws image and loads it if supposed to draw new
+  #Load image if it changes
   if(imagePath != selectedPath):
     imagePath = selectedPath
     var dataPtr = load(imagePath)
@@ -269,18 +279,12 @@ proc main() =
       dropWidth = 0
       dropHeight = 0
       viableCommands = parseAnsiInteractText(getOptions())
-      var height = (viableCommands.len.toFloat() + 1) * igGetFontSize() + igGetFontSize() / 2
-      dropHeight = min(height,maxDrop.toFloat * igGetFontSize() + igGetFontSize() / 2)
-
-      #Get Max Width
-      #for x in viableCommands:
-          #dropWidth = max(x.words[0].text.len.toFloat * igGetFontSize() * 0.75,dropWidth)
 
     drawExtensions(width.toFloat, flag)
 
     drawOptions()
 
-    drawInfo()
+    drawInfo(width.toFloat)
 
     igEnd()
 
