@@ -110,11 +110,10 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
       elif(inputNotSelected()): 
         currentInput = fmt">{viableCommands[selected].text}"
         cursor = currentInput.high
-      else: 
+      elif(currentInput.len > 1):
         historySelection = 0
         history.add(newHistory(run()))
         clearInput()
-        echo history
         viableCommands = @[]
 
     of GLFWKey.Right:
@@ -224,7 +223,7 @@ proc main() =
       var ext = ""
       for x in countdown(selectedPath.high,0):
         if(selectedPath[x] == '.'): ext = selectedPath.substr(x+1,selectedPath.high)
-      case ext:
+      case ext.toLower():
       of "png","jpeg","jpg","tiff":
         #Load image if it changes
         if(imagePath != selectedPath):
