@@ -1,8 +1,10 @@
 import nimgl/imgui, nimgl/imgui/[impl_opengl, impl_glfw]
 import nre
 import strutils
+import strformat
 import tables
 import os
+import osproc
 
 let escSeq = re"\e\[.*m"
 
@@ -12,12 +14,15 @@ proc newCol(i : ImVec4): ImVec4= ImVec4(x:i.x,y:i.y,z:i.z,w:1)
 
 
 type
-    StyledText* = object
-        text* : string
+    Style* = ref object
         colourFG* : ImVec4
         colourBG : ImVec4
         styles : seq[EscapeCode]
+
+    StyledText* = object
+        text* : string
         selected* : bool
+        style : Style
     
     EscapeCode = enum
         ResetAll = 0,
@@ -121,66 +126,62 @@ colourBGTable.add(BlackBG.int,black)
 colourFGTable.add(BlackFG.int,black)
 
 
-proc parseAnsiText*(input: string): seq[StyledText]=
-    var pos = 0
-    var sanatizedInput = input.replace("\e[0m","")
-    while pos < sanatizedInput.len:
-        let found = sanatizedInput.find(escSeq,pos)
-        if(found.isSome):
-            var bounds = found.get.captureBounds[-1]
-            if(bounds.a != pos):
-                var unStyledText = StyledText(selected : false)
-                unStyledText.colourFG = colourFGTable[WhiteFG.int]
-                unStyledText.colourBG = colourBGTable[BlackBG.int]
-                unStyledText.text = sanatizedInput[pos..bounds.a]
-                result.add(unStyledText)
-            var text = StyledText()
-            var splitString = sanatizedInput[bounds].split("m",1)
+proc newStyle*(foreground : ImVec4 = colourFGTable[WhiteFG.int],background : ImVec4 = colourBGTable[WhiteBG.int], styles : seq[EscapeCode] = @[]): Style=
+    result = Style(colourFG : foreground,colourBG : background,styles : styles )
+
+proc newStyledText*(text : string,style : Style):StyledText = StyledText(style:style,text:text)
+
+var currentStyle = newStyle()
+
+proc parseAnsiDisplayText*(input: string): seq[StyledText]=
+    ##Used for displaying responses
+    var currentPos = 0
+    var currentStream = ""
+    while currentPos < input.len:
+        if(currentPos + 1 < input.len and input.substr(currentPos,(currentPos + 1)) == "\e["):
+            if(currentStream.len > 0):
+                var styledText = StyledText()
+                styledText.text = currentStream.strip(chars = {'\n'})
+                styledText.style = currentStyle
+                result.add(styledText)
+                currentStream = ""
             
-            #No word here, dont write anything
-            if(splitString.len < 2): 
-                pos = bounds.b
-                continue
-            text.text = splitString[1]
-            var codes = splitString[0].replace("\e[","",).split(";")
-            for code in codes:
-                try:
-                    var parsed = parseInt(code)
-                    text.styles.add(EscapeCode(parsed))
-                    if(colourBGTable.contains(parsed)): text.colourBG = colourBGTable[parsed]
-                    if(colourFGTable.contains(parsed)): text.colourFG = colourFGTable[parsed]
-                except:
-                    echo "input int not parsable ", code
-            if(text.text != "\n\e"): result.add(text)
-            pos = bounds.b+1
-        else:
-            var unStyledText = StyledText(selected : false)
-            unStyledText.colourFG = colourFGTable[WhiteFG.int]
-            unStyledText.colourBG = colourBGTable[BlackBG.int]
-            unStyledText.text = sanatizedInput[pos..sanatizedInput.high]
-            if(unStyledText.text != "\n\e"): result.add(unStyledText)
-            pos = sanatizedInput.len
+            currentPos += 2
+            var codeString = ""
+            while input[currentPos] != 'm':
+                codeString &= input[currentPos]
+                inc(currentPos)
+            var codes = codeString.split(";")
+            for x in codes:
+                var parsed = parseInt(x)
+                if(parsed == 0 and codes.len == 1): currentStyle = newStyle()
+                if(colourFGTable.contains(parsed)): currentStyle.colourFG = colourFGTable[parsed]
+                if(colourBGTable.contains(parsed)): currentStyle.colourBG = colourBGTable[parsed]
+                else: currentStyle.styles.add(EscapeCode(parsed))
+        else: currentStream &= input[currentPos]
+        inc(currentPos)
+    if(currentStream.len > 0):
+        var styledText = StyledText()
+        styledText.text = currentStream.strip(chars = {'\n'})
+        styledText.style = currentStyle
+        result.add(styledText)
+        currentStream = ""
 
-    for x in countdown(result.high,0):
-        result[x].text = result[x].text.replace("\n\e","\n")
-        #Remove useless newlines
-        var didSplit = false
-        for split in result[x].text.split("\n"):
-            if(split != ""):
-                var style = StyledText(selected : false)
-                style.colourBG = newCol(result[x].colourBG)
-                style.colourFG = newCol(result[x].colourFG)
-                style.styles = result[x].styles
-                style.text = split
-                result.add(style)
-                didSplit = true
-        if(didSplit): result.delete(x)
+proc parseAnsiInteractText*(input : string): seq[StyledText]=
+    var parsed = parseAnsiDisplayText(input)
+    for x in 0..<parsed.len:
+        var splitText = parsed[x].text.split("\n")
+        if(splitText.len > 1):
+            parsed[x].text = splitText[0]
+            for split in 1..<splitText.len:
+                if(splitText[split].len > 0 or splitText[split] != " "):
+                    var newText = newStyledText(splitText[split].strip(chars = {'\n'}),parsed[x].style)
+                    if(x + split < parsed.len): parsed.insert(newText,x + split)
+                    else: parsed.add(newText)
+    result = parsed
 
-
-proc drawAnsiText*(words : seq[StyledText], drawInline : bool = false) =
-    for x in words:
-        var col : ImVec4 = x.colourFG
-        if(col.w < 1): col = colourFGTable[WhiteFG.int]
-        if(x.selected): igTextColored(colourFGTable[LightGreenFG.int], x.text)
-        else: igTextColored(col,x.text)
-        if(drawInline): igSameLine(0,0)
+proc drawAnsiText*(input : seq[StyledText])=
+    for x in input:
+        if(x.text == "" or x.text == "\n"): continue
+        if(x.selected): igTextColored(colourFGTable[GreenFG.int],x.text)
+        else: igTextColored(x.style.colourFG,x.text)

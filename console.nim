@@ -9,8 +9,6 @@ import nre
 import unicode
 import sdl2/image
 
-let
-  commandPattern = re"([^\s]+)"
 
 var 
   currentInput = ">"
@@ -21,37 +19,69 @@ var
   maxDrop : int = 20
   argWidth : float = 0
   selected = 0
+  cursor = 0
   
   #Image variables
   imageID : ImTextureID
   imageAspect : float
   imagePath : string
 
-proc getCommand():string=
-  var found = currentInput.match(commandPattern)
-  if(found.isSome()): 
-    var bounds = found.get.captureBounds[-1]
-    bounds.a += 1
-    return currentInput[bounds]
+  style : ptr ImGuiStyle
+
+
+type
+    History = object
+      text : seq[StyledText]
+  
+proc newHistory(input: seq[StyledText]): History = History(text:input)
+
+var
+  history : seq[History] = @[]
+  lastHistoryCount = 0
+  historySelection = 0
+
+proc clearInput()= currentInput = currentInput.substr(0,0)
+
+proc getFullCommand():string= currentInput.substr(1,currentInput.high)
+
+proc getCommand():string = currentInput.substr(1,currentInput.high).split(' ')[0]
 
 proc isPath():bool = dirExists(getCommand().splitFile().dir)
 
-proc getCommands(): string = 
+proc getOptions(): string = 
   var command = getCommand()
   if(isPath()):
     var fileSplit = command.splitFile()
     return execCmdEx(fmt"ls {fileSplit.dir} | grep '^{fileSplit.name}' ").output
   return execCmdEx(fmt"ls /bin/ | grep '^{command}'").output
 
-proc getInfo(): seq[string]=
-  var tldr = execCmdEx(fmt"tldr {getCommand()}").output
-  var splitTldr = tldr.split("\n")
+proc appendSelection(): string = 
+  var split = getCommand().splitFile()
+  var dir = split.dir & "/"
+  if(dir == "//"): dir = "/"
+  result = fmt">{dir}{viableCommands[selected].text}"
+  if(dirExists(fmt"{dir}{viableCommands[selected].text}")): result &= "/"
 
-  if(splitTldr.len > 1):
-    result.add(splitTldr[1].replace("\e[0m"))
+proc getInfo(input : string): seq[StyledText]=
+  var tldr = execCmdEx(fmt"tldr {input}").output
+  if(tldr.split("\n").len > 2):
+    result.add(parseAnsiInteractText(tldr))
 
+proc hasOptions():bool = viableCommands.len > 0
 
-proc hasCommands():bool = viableCommands.len > 0
+proc inputNotSelected : bool = hasOptions() and not getCommand().contains(viableCommands[selected].text)
+
+proc run() : seq[StyledText]=
+  var command = getFullCommand()
+  var commandStyled = newStyledText(currentInput,newStyle())
+  result.add(commandStyled)
+  clearInput()
+  case command:
+  of "clear": 
+    history = @[]
+    return @[]
+  var output = execCmdEx(command).output
+  result.add(parseAnsiDisplayText(output))
 
 proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32, mods: int32):void{.cdecl.}=
   if(action == GLFW_RELEASE): return
@@ -69,27 +99,47 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
               if(lastIsLetter != Letters.contains(currentInput[x])): 
                 currentInput = currentInput.substr(0,x)
                 break
-          else: currentInput = currentInput.substr(0,currentInput.high-1)
+          else: 
+            currentInput = currentInput.substr(0,currentInput.high - 1)
+            cursor -= 1
 
     of GLFWKey.Enter:
-      if(hasCommands() and isPath()):
-        var split = getCommand().splitFile()
-        var dir = split.dir & "/"
-        if(dir == "//"): dir = "/"
-        currentInput = fmt">{dir}{viableCommands[selected].text}"
-        if(dirExists(fmt"{dir}{viableCommands[selected].text}")): currentInput &= "/"
+      if(hasOptions() and isPath()): 
+        currentInput = appendSelection()
+        cursor = currentInput.high
+      elif(inputNotSelected()): 
+        currentInput = fmt">{viableCommands[selected].text}"
+        cursor = currentInput.high
+      else: 
+        historySelection = 0
+        history.add(newHistory(run()))
+        clearInput()
+        echo history
+        viableCommands = @[]
 
-      elif(hasCommands()):currentInput = fmt">{viableCommands[selected].text}"
+    of GLFWKey.Right:
+      if(not shiftPressed and cursor < currentInput.high): cursor += 1
+      if(hasOptions() and isPath() and shiftPressed): currentInput = appendSelection()
+      elif(hasOptions() and shiftPressed): currentInput = fmt">{viableCommands[selected].text}"
+
+    of GLFWKey.Left:
+      if(not shiftPressed and cursor > 1):cursor -= 1
+
     of GLFWKey.Up:
-      if(hasCommands()): selected = (selected - 1 + viableCommands.len) %% viableCommands.len
+      if(inputNotSelected()): selected = (selected - 1 + viableCommands.len) %% viableCommands.len
+      elif(history.len > 0 and history[history.high].text.len > 0 and shiftPressed):
+        currentInput = history[history.high - historySelection].text[0].text
+        if(history.high - historySelection > 0): historySelection += 1
 
     of GLFWKey.Down:
-      if(hasCommands()): selected = (selected + 1 + viableCommands.len) %% viableCommands.len
-
+      if(hasOptions() and not shiftPressed): selected = (selected + 1 + viableCommands.len) %% viableCommands.len
+      elif(historySelection > 0 and shiftPressed):
+        currentInput = history[history.high - historySelection].text[0].text
+        historySelection -= 1
     else:discard
 
   #Update Text
-  if(lastSelected != selected and hasCommands()):
+  if(lastSelected != selected and hasOptions()):
     viableCommands[lastSelected].selected = false
     viableCommands[selected].selected = true
 
@@ -97,6 +147,7 @@ proc onChar(window: GLFWWindow, codepoint: uint32, mods: int32): void {.cdecl.}=
   var rune = Rune(codepoint)
   if((mods and GLFWModShift) == GLFWModShift): rune = rune.toUpper()
   currentInput.add(rune)
+  cursor += 1
 
 
 proc main() =
@@ -122,7 +173,9 @@ proc main() =
   assert igGlfwInitForOpenGL(w, true)
   assert igOpenGL3Init()
 
-  igStyleColorsCherry()
+  style = igGetStyle()
+
+  igStyleColorsDark(style)
 
   var flag = ImGuiWindowFlags(ImGuiWindowFlags.NoDecoration.int or ImGuiWindowFlags.AlwaysAutoResize.int or ImGuiWindowFlags.NoMove.int)
   while not w.windowShouldClose:
@@ -138,26 +191,35 @@ proc main() =
     igSetNextWindowPos(ImVec2(x:0,y:0),ImGuiCond.Always)
     igBegin("Interactive Terminal", flags = flag)
 
-    #TODO- Draw History
+    #Draw responses
+    for ele in history:
+      drawAnsiText(ele.text)
+    if(lastHistoryCount != history.len):
+      igSetScrollY(100000000)
+      lastHistoryCount = history.len
 
     igText(currentInput)
+    igSameLine(0,0)
+    igTextColored(ImVec4(x:1,y:1,z:0,w:1),"_")
+
     if(currentInput.len > 1 and currentInput != lastInput):
       selected = 0
       dropWidth = 0
       dropHeight = 0
-      viableCommands = parseAnsiText(getCommands())
-
-      var height = (viableCommands.len.toFloat() + 1) * igGetFontSize()
-      dropHeight = min(height,maxDrop.toFloat * igGetFontSize())
+      viableCommands = parseAnsiInteractText(getOptions())
+      var height = (viableCommands.len.toFloat() + 1) * igGetFontSize() + igGetFontSize() / 2
+      dropHeight = min(height,maxDrop.toFloat * igGetFontSize() + igGetFontSize() / 2)
 
       #Get Max Width
       for x in viableCommands:
-        dropWidth = max(x.text.len.toFloat * igGetFontSize() * 0.75,dropWidth)
+        for y in x.text.split("\n"):
+          dropWidth = max(y.len.toFloat * igGetFontSize() * 0.75,dropWidth)
+
     var currentCommand = getCommand()
 
     #Extension Stuff
     var selectedPath = currentCommand
-    if(not fileExists(selectedPath) and hasCommands()): selectedPath = currentCommand.splitFile().dir & "/" & viableCommands[selected].text
+    if(not fileExists(selectedPath) and hasOptions()): selectedPath = currentCommand.splitFile().dir & "/" & viableCommands[selected].text
     if(fileExists(selectedPath)):
       var ext = ""
       for x in countdown(selectedPath.high,0):
@@ -196,12 +258,8 @@ proc main() =
 
       else: discard
 
-    #Draw Binaries
-    if(hasCommands() and currentInput.len > 1 and not currentCommand.contains(viableCommands[selected].text)):
-      igSetNextWindowFocus()
-      igSetNextWindowSize(ImVec2(x:dropWidth,y: dropHeight),ImGuiCond.Always)
-      igSetNextWindowPos(ImVec2(x : igGetFontSize(),y:igGetFontSize() * 2),ImGuiCond.Always)
-      igBegin("autofill",flags = flag)
+    #Draw Options
+    if(hasOptions() and currentInput.len > 1):
       viableCommands[selected].selected = true
       #Get small segment to draw, else draw everything
       if(viableCommands.len > maxDrop):
@@ -209,33 +267,15 @@ proc main() =
         for x in 0..maxDrop:
           var index = (selected + x + viableCommands.len) %% viableCommands.len
           toDraw.add(viableCommands[index])
-        drawAnsiText(toDraw,false)
+        drawAnsiText(toDraw)
       else: drawAnsiText(viableCommands)
-      igEnd()
-
     #Draw Info
-    if(currentInput.len > 1 and hasCommands() and currentCommand.contains(viableCommands[selected].text)):
-      var args = getInfo()
-      if(args.len > 0 and args[0] != ""):
-        igSetNextWindowFocus()
-        var desc = parseAnsiText(args[0])
-        argWidth = min(args[0].len.toFloat * igGetFontSize(),width.toFloat * 0.90)
-        var lastSpace = 0
-        var lastNewLine = 0
-        var lines = 2
-        for x in 0..<desc[0].text.len:
-          if(desc[0].text[x] == ' '): lastSpace = x
-          if((x - lastNewline).toFloat * igGetFontSize() > argWidth):
-            desc[0].text[lastSpace] = '\n'
-            lastNewLine = lastSpace
-            inc(lines)
-
-
-        igSetNextWindowSize(ImVec2(x:argWidth,y: igGetFontSize() * lines.toFloat),ImGuiCond.Always)
-        igSetNextWindowPos(ImVec2(x : igGetFontSize(),y:igGetFontSize() * 2),ImGuiCond.Always)
-        igBegin("description",flags = flag)
-        drawAnsiText(desc)
-        igEnd()
+    if(currentInput.len > 1):
+      var command = getCommand()
+      if(hasOptions()): command = viableCommands[selected].text
+      var args = getInfo(command)
+      if(args.len > 1):
+        drawAnsiText(args[1..args.high])
     igEnd()
 
     # End simple window
