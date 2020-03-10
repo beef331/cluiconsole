@@ -6,7 +6,6 @@ import tables
 import os
 import osproc
 
-let escSeq = re"\e\[.*m"
 
 proc newCol(x,y,z:float): ImVec4= ImVec4(x:x,y:y,z:z,w:1)
 proc newCol(i : ImVec4): ImVec4= ImVec4(x:i.x,y:i.y,z:i.z,w:1)
@@ -19,11 +18,15 @@ type
         colourBG : ImVec4
         styles : seq[EscapeCode]
 
+
     StyledText* = object
         text* : string
         selected* : bool
         style : Style
-    
+
+    StyleLine* = object
+        words*: seq[StyledText]
+
     EscapeCode = enum
         ResetAll = 0,
         Bold = 1,
@@ -131,57 +134,72 @@ proc newStyle*(foreground : ImVec4 = colourFGTable[WhiteFG.int],background : ImV
 
 proc newStyledText*(text : string,style : Style):StyledText = StyledText(style:style,text:text)
 
-var currentStyle = newStyle()
 
-proc parseAnsiDisplayText*(input: string): seq[StyledText]=
+proc parseAnsiDisplayText*(input: string): seq[StyleLine]=
+    var currentStyle = newStyle()
     ##Used for displaying responses
-    var currentPos = 0
-    var currentStream = ""
-    while currentPos < input.len:
-        if(currentPos + 1 < input.len and input.substr(currentPos,(currentPos + 1)) == "\e["):
-            if(currentStream.len > 0):
-                var styledText = StyledText()
-                styledText.text = currentStream.strip(chars = {'\n'})
-                styledText.style = currentStyle
-                result.add(styledText)
-                currentStream = ""
-            
-            currentPos += 2
-            var codeString = ""
-            while input[currentPos] != 'm':
-                codeString &= input[currentPos]
-                inc(currentPos)
-            var codes = codeString.split(";")
-            for x in codes:
-                var parsed = parseInt(x)
-                if(parsed == 0 and codes.len == 1): currentStyle = newStyle()
-                if(colourFGTable.contains(parsed)): currentStyle.colourFG = colourFGTable[parsed]
-                if(colourBGTable.contains(parsed)): currentStyle.colourBG = colourBGTable[parsed]
-                else: currentStyle.styles.add(EscapeCode(parsed))
-        else: currentStream &= input[currentPos]
-        inc(currentPos)
-    if(currentStream.len > 0):
-        var styledText = StyledText()
-        styledText.text = currentStream.strip(chars = {'\n'})
-        styledText.style = currentStyle
-        result.add(styledText)
-        currentStream = ""
+    for line in input.split("\n"):
+        var currentPos = 0
+        var currentStream = ""
+        var styleLine = StyleLine()
+        while currentPos < line.len:
+            if(currentPos + 1 < line.len and line.substr(currentPos,(currentPos + 1)) == "\e["):
+                if(currentStream.len > 0):
+                    var styledText = StyledText()
+                    styledText.text = currentStream
+                    styledText.style = currentStyle
+                    styleLine.words.add(styledText)
+                    currentStream = ""
 
-proc parseAnsiInteractText*(input : string): seq[StyledText]=
+                #Find code string
+                currentPos += 2
+                var codeString = ""
+                while line[currentPos] != 'm':
+                    codeString &= line[currentPos]
+                    inc(currentPos)
+
+                #Get Style Codes
+                var codes = codeString.split(";")
+                for x in codes:
+                    var parsed = parseInt(x)
+                    if(parsed == 0 and codes.len == 1): currentStyle = newStyle()
+                    if(colourFGTable.contains(parsed)): currentStyle.colourFG = colourFGTable[parsed]
+                    elif(colourBGTable.contains(parsed)): currentStyle.colourBG = colourBGTable[parsed]
+                    else: currentStyle.styles.add(EscapeCode(parsed))
+
+            else: currentStream &= line[currentPos]
+            inc(currentPos)
+
+        #Exit but write the past to the terminal
+        if(currentStream.len > 0):
+            var styledText = StyledText()
+            styledText.text = currentStream
+            styledText.style = currentStyle
+            styleLine.words.add(styledText)
+            currentStream = ""
+        if(styleLine.words.len > 0): result.add(styleLine)
+
+proc parseAnsiInteractText*(input : string): seq[StyleLine]=
     var parsed = parseAnsiDisplayText(input)
-    for x in 0..<parsed.len:
-        var splitText = parsed[x].text.split("\n")
-        if(splitText.len > 1):
-            parsed[x].text = splitText[0]
-            for split in 1..<splitText.len:
-                if(splitText[split].len > 0 or splitText[split] != " "):
-                    var newText = newStyledText(splitText[split].strip(chars = {'\n'}),parsed[x].style)
-                    if(x + split < parsed.len): parsed.insert(newText,x + split)
-                    else: parsed.add(newText)
+    
+    for i in 0..<parsed.len:
+        for x in 0..<parsed[i].words.len:
+            var splitText = parsed[i].words[x].text.split("\n")
+            if(splitText.len > 1):
+                parsed[i].words[x].text = splitText[0]
+                for split in 1..<splitText.len:
+                    if(splitText[split].len > 0 or splitText[split] != " "):
+                        var newText = newStyledText(splitText[split].strip(chars = {'\n'}),parsed[i].words[x].style)
+                        if(x + split < parsed[i].words.len): parsed[i].words.insert(newText,x + split)
+                        else: parsed[i].words.add(newText)
     result = parsed
 
-proc drawAnsiText*(input : seq[StyledText])=
+proc drawAnsiText*(input : seq[StyleLine])=
     for x in input:
-        if(x.text == "" or x.text == "\n"): continue
-        if(x.selected): igTextColored(colourFGTable[GreenFG.int],x.text)
-        else: igTextColored(x.style.colourFG,x.text)
+        var sameLine = false
+        for word in x.words:
+            if(sameLine): igSameLine(0,0)
+            if(word.text == "" or word.text == "\n"): continue
+            if(word.selected): igTextColored(colourFGTable[GreenFG.int],word.text)
+            else: igTextColored(word.style.colourFG,word.text)
+            sameLine = true
