@@ -8,6 +8,8 @@ import strutils
 import nre
 import unicode
 import sdl2/image
+import streams
+import times
 
 
 var 
@@ -26,7 +28,10 @@ var
   imageAspect : float
   imagePath : string
 
+  startedProcess : Process
+
   style : ptr ImGuiStyle
+  outputBuffer : array[30000,char]
 
 
 type
@@ -71,18 +76,31 @@ proc hasOptions():bool = viableCommands.len > 0
 
 proc inputNotSelected : bool = hasOptions() and not getCommand().contains(viableCommands[selected].words[0].text)
 
+proc processRunning : bool = startedProcess != nil and startedProcess.running
+
 proc run() : seq[StyleLine]=
-  var command = getFullCommand()
+  var baseCommand = getCommand()
+  var fullCommand = getFullCommand()
   var commandStyled = StyleLine()
   commandStyled.words.add(newStyledText(currentInput,newStyle()))
   result.add(commandStyled)
   clearInput()
-  case command:
+  case baseCommand:
   of "clear": 
     history = @[]
     return @[]
-  var output = execCmdEx(command).output
-  result.add(parseAnsiDisplayText(output))
+  of "cd":
+    var split = fullCommand.split(" ",1)
+    if(split.len > 0):
+      var dir =  split[1].replace("~",getHomeDir())
+      if(dirExists(dir)): setCurrentDir(dir)
+    return
+  
+  startedProcess = startProcess(fullCommand, options = {poUsePath,poEvalCommand})
+  if(startedProcess.waitForExit(100) == 0): 
+    var output = startedProcess.outputStream.readAll()
+    var parsedOutput = parseAnsiDisplayText(output)
+    result.add(parsedOutput)
 
 proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32, mods: int32):void{.cdecl.}=
   if(action == GLFW_RELEASE): return
@@ -108,7 +126,7 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
       if(hasOptions() and isPath()): 
         currentInput = appendSelection()
         cursor = currentInput.high
-      elif(inputNotSelected()): 
+      elif(inputNotSelected() and not currentInput.contains(" ")): 
         currentInput = fmt">{viableCommands[selected].words[0].text}"
         cursor = currentInput.high
       elif(currentInput.len > 1):
@@ -136,6 +154,11 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
       elif(historySelection > 0 and shiftPressed):
         currentInput = history[history.high - historySelection].text[0].words[0].text
         historySelection -= 1
+    
+    of GLFWKey.C:
+      if(controlPressed):
+        if(processRunning()): startedProcess.close()
+        quit(0)
     else:discard
 
   #Update Text
@@ -222,6 +245,14 @@ proc drawExtensions(width : float32, flag: ImGuiWindowFlags)=
       drawImage(selectedPath,width,flag)
     else: discard
 
+proc drawRunningProcces()=
+  var stream = startedProcess.outputStream
+  var len = stream.readData(outputBuffer.addr,outputBuffer.len)
+  var outputString : string 
+  for x in 0..len-1: outputString &= outputBuffer[x]
+  var parsed = parseAnsiDisplayText(outputString)
+  drawAnsiText(parsed)
+
 proc main() =
   assert glfwInit()
 
@@ -262,29 +293,32 @@ proc main() =
     igSetNextWindowSize(ImVec2(x:float32(width),y: float32(height)),ImGuiCond.Always)
     igSetNextWindowPos(ImVec2(x:0,y:0),ImGuiCond.Always)
     igBegin("Interactive Terminal", flags = flag)
+    if(startedProcess == nil or not startedProcess.running):
+      #Draw responses
+      for ele in history:
+        drawAnsiText(ele.text)
+      if(lastHistoryCount != history.len):
+        igSetScrollY(100000000)
+        lastHistoryCount = history.len
 
-    #Draw responses
-    for ele in history:
-      drawAnsiText(ele.text)
-    if(lastHistoryCount != history.len):
-      igSetScrollY(100000000)
-      lastHistoryCount = history.len
+      igText(currentInput)
+      igSameLine(0,0)
+      igTextColored(ImVec4(x:1,y:1,z:0,w:1),"_")
 
-    igText(currentInput)
-    igSameLine(0,0)
-    igTextColored(ImVec4(x:1,y:1,z:0,w:1),"_")
+      if(currentInput.len > 1 and currentInput != lastInput):
+        selected = 0
+        dropWidth = 0
+        dropHeight = 0
+        viableCommands = parseAnsiInteractText(getOptions())
 
-    if(currentInput.len > 1 and currentInput != lastInput):
-      selected = 0
-      dropWidth = 0
-      dropHeight = 0
-      viableCommands = parseAnsiInteractText(getOptions())
+      drawExtensions(width.toFloat, flag)
 
-    drawExtensions(width.toFloat, flag)
+      drawOptions()
 
-    drawOptions()
-
-    drawInfo(width.toFloat)
+      drawInfo(width.toFloat)
+    
+    #else: drawRunningProcces()
+      
 
     igEnd()
 

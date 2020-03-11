@@ -7,8 +7,8 @@ import os
 import osproc
 
 
-proc newCol(x,y,z:float): ImVec4= ImVec4(x:x,y:y,z:z,w:1)
-proc newCol(i : ImVec4): ImVec4= ImVec4(x:i.x,y:i.y,z:i.z,w:1)
+proc newCol*(x,y,z:float): ImVec4 = ImVec4(x:x,y:y,z:z,w:1)
+proc newCol*(i : ImVec4): ImVec4 = ImVec4(x:i.x,y:i.y,z:i.z,w:1)
 
 
 
@@ -134,7 +134,6 @@ proc newStyle*(foreground : ImVec4 = colourFGTable[WhiteFG.int],background : ImV
 
 proc newStyledText*(text : string,style : Style):StyledText = StyledText(style:style,text:text)
 
-
 proc parseAnsiDisplayText*(input: string): seq[StyleLine]=
     var currentStyle = newStyle()
     ##Used for displaying responses
@@ -154,18 +153,25 @@ proc parseAnsiDisplayText*(input: string): seq[StyleLine]=
                 #Find code string
                 currentPos += 2
                 var codeString = ""
-                while line[currentPos] != 'm':
+                while currentPos < line.len and not Letters.contains(line[currentPos]):
+                    if(currentPos > line.high): 
+                        echo line
+                        break
                     codeString &= line[currentPos]
                     inc(currentPos)
 
                 #Get Style Codes
                 var codes = codeString.split(";")
                 for x in codes:
-                    var parsed = parseInt(x)
-                    if(parsed == 0 and codes.len == 1): currentStyle = newStyle()
-                    if(colourFGTable.contains(parsed)): currentStyle.colourFG = colourFGTable[parsed]
-                    elif(colourBGTable.contains(parsed)): currentStyle.colourBG = colourBGTable[parsed]
-                    else: currentStyle.styles.add(EscapeCode(parsed))
+                    if x.contains("?"): continue
+                    try:
+                        var parsed = parseInt(x)
+                        if(parsed == 0 and codes.len == 1): currentStyle = newStyle()
+                        if(colourFGTable.contains(parsed)): currentStyle.colourFG = colourFGTable[parsed]
+                        elif(colourBGTable.contains(parsed)): currentStyle.colourBG = colourBGTable[parsed]
+                        else: currentStyle.styles.add(EscapeCode(parsed))
+                    except:
+                        echo x
 
             else: currentStream &= line[currentPos]
             inc(currentPos)
