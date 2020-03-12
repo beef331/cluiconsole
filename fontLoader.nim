@@ -15,6 +15,16 @@ let nameMatch = re".*="
 let pathMatch = re"=.*:"
 let sizeMatch = re":\d*"
 
+let 
+    baseConfig = """
+font
+    normal = /usr/share/fonts/truetype/noto/NotoMono-Regular.ttf:14
+    bold = /usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf:14
+    thin = /usr/share/fonts/truetype/noto/NotoSansMono-Light.ttf:14
+"""
+    path = fmt"{getHomeDir()}.config/clui/console.config"
+
+
 proc getMatch(input: string, match : Regex): string=
     let regMatch = input.find(match)
     if(regMatch.isSome()):
@@ -25,8 +35,8 @@ proc getMatch(input: string, match : Regex): string=
 
 
 proc loadFontFile*(): seq[Font]=
-    if(fileExists("console.config")):
-        var fontFile = open("console.config",fmRead)
+    if(fileExists(path)):
+        var fontFile = open(path,fmRead)
         while not fontFile.endOfFile():
             var line = fontFile.readLine()
             if(line == "font"):
@@ -57,3 +67,11 @@ proc loadFontFile*(): seq[Font]=
                             result.add(Font(path:pathString,size:size,style:style))
 
                     else: return result
+    else:
+        let splitDir = path.splitFile()
+        if(not dirExists(splitDir.dir)): createDir(splitDir.dir)
+        echo path
+        var file = open(path,fmWrite)
+        file.write(baseConfig)
+        file.close()
+        return loadFontFile()
