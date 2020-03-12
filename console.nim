@@ -28,12 +28,16 @@ var
   imageID : ImTextureID
   imageAspect : float
   imagePath : string
+
+
   showFontSelector = false
   showStyleSelector = false
 
   startedProcess : Process
 
   style : ptr ImGuiStyle
+
+
 
 
 type
@@ -46,6 +50,7 @@ var
   history : seq[History] = @[]
   lastHistoryCount = 0
   historySelection = 0
+  historyChanged = false
 
 proc clearInput()= 
   currentInput = currentInput.substr(0,0)
@@ -150,6 +155,7 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
       elif(currentInput.len > 1):
         historySelection = 0
         history.add(newHistory(run()))
+        historyChanged = true
         clearInput()
         viableCommands = @[]
 
@@ -207,7 +213,7 @@ proc drawInfo(width : float32)=
     if(hasOptions()): command = viableCommands[selected].words[0].text
     var args = getInfo(command)
     if(args.len > 1):
-      igBeginChild("info",ImVec2(x: width - igGetFontSize(), y: ((args.len.toFloat + 4) * igGetFontSize())),true)
+      igBeginChild("info",ImVec2(x: width - igGetFontSize(), y: (args.len + 1).toFloat * igGetTextLineHeightWithSpacing()),true)
       drawAnsiText(args[1..args.high])
       igEndChild()
 
@@ -220,14 +226,15 @@ proc drawOptions()=
     for x in viableCommands:
         dropWidth = max(igCalcTextSize(x.words[0].text & "  ").x,dropWidth)
     #Get small segment to draw, else draw everything
-    var pos = igGetCursorPos()
-    pos.x = igCalcTextSize(getCurrentDir() & ">").x
+    let pos = igGetCursorPos()
+    var drawPos = pos
+    drawPos.x = igCalcTextSize(getCurrentDir() & ">").x
     for x in countdown(cursor,1):
       if(currentInput[x] == ' ' or currentInput[x] == '/'):
-        pos.x += igCalcTextSize(currentInput.substr(0,x-1)).x
+        drawPos.x += igCalcTextSize(currentInput.substr(0,x-1)).x
         break
-    igSetNextWindowPos(pos,ImGuiCond.Always)
-    igBeginChild("autoComplete",size = ImVec2(x:dropWidth,y:dropHeight), border = true)
+    igSetNextWindowPos(drawPos,ImGuiCond.Always)
+    igBeginChild("autoComplete",size = ImVec2(x:dropWidth,y:dropHeight))
     if(viableCommands.len > maxDrop):
       var toDraw : seq[StyleLine]
       for x in 0..maxDrop:
@@ -236,6 +243,7 @@ proc drawOptions()=
       drawAnsiText(toDraw)
     else: drawAnsiText(viableCommands)
     igEndChild()
+    igSetCursorPos(pos)
 
 proc drawImage(selectedPath : string, width : float32,flag : ImGuiWindowFlags)=
   ##Draws image and loads it if supposed to draw new
@@ -261,21 +269,25 @@ proc drawImage(selectedPath : string, width : float32,flag : ImGuiWindowFlags)=
   imageSize.x = min((300f * imageAspect),width-300f)
   imageSize.y = imageSize.x
   imageSize.x *= imageAspect
-
+  var preDrawPos = igGetCursorPos()
   igBeginChild("Image Viewer", imageSize)
   igImage(imageID,imageSize)
   igEndChild()
+  igSetCursorPos(preDrawPos)
 
 proc drawExtensions(width : float32, flag: ImGuiWindowFlags)=
   ##Draws specific elements per type
   
   var selectedPath = getPaths()
+  
   #Search all possible paths
   if(not fileExists(selectedPath) and hasOptions()):
-    let selectionRelativeToCurrent = getCurrentDir() & viableCommands[selected].words[0].text
+    let selectionRelativeToCurrent = getCurrentDir() & "/" & viableCommands[selected].words[0].text
     let selectionAbsolute = fmt"{selectedPath.splitFile().dir}/{viableCommands[selected].words[0].text}"
     if(fileExists(selectionRelativeToCurrent)): selectedPath = selectionRelativeToCurrent
     elif(fileExists(selectionAbsolute)): selectedPath = selectionAbsolute
+
+  if(not fileExists(selectedPath)): return
   
   var ext = ""
   for x in countdown(selectedPath.high,0):
@@ -289,9 +301,9 @@ proc drawHistory()=
   ##Draw responses
   for ele in history:
     drawAnsiText(ele.text)
-  if(lastHistoryCount != history.len):
-    igSetScrollY(100000000)
-    lastHistoryCount = history.len
+  if(historyChanged):
+    igSetScrollY(igGetCursorPosY())
+    historyChanged = false
 
 proc drawRunningProcces()=
   var stream = startedProcess.outputStream
@@ -334,6 +346,7 @@ proc processStdout()=
     for x in parseAnsiDisplayText(startedProcess.outputStream.readall()):
       newHistObj.text.add(x)
     startedProcess = nil
+    historyChanged = true
 
 proc loadFonts()=
   var fonts = loadFontFile()
@@ -387,23 +400,21 @@ proc main() =
     igBegin("Interactive Terminal", flags = flag)
     if(showFontSelector): igShowFontSelector("Choose a font")
     if(showStyleSelector): igShowStyleEditor()
-    if(startedProcess == nil or not startedProcess.running):
-      drawHistory()
+    drawHistory()
      
-      drawCurrentInput()
+    drawCurrentInput()
 
-      if(currentInput.len > 1 and currentInput != lastInput):
-        selected = 0
-        dropWidth = 0
-        dropHeight = 0
-        viableCommands = parseAnsiInteractText(getOptions())
+    if(currentInput.len > 1 and currentInput != lastInput):
+      selected = 0
+      dropWidth = 0
+      dropHeight = 0
+      viableCommands = parseAnsiInteractText(getOptions())
 
-      drawOptions()
-      drawExtensions(width.toFloat, flag)
+    drawExtensions(width.toFloat, flag)
+    drawOptions()
 
+    drawInfo(width.toFloat)    
 
-      drawInfo(width.toFloat)    
-    #else: drawRunningProcces()
     processStdout()
 
     igEnd()
