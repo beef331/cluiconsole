@@ -10,6 +10,7 @@ import unicode
 import sdl2/image
 import streams
 import times
+import fontLoader
 
 
 var 
@@ -27,11 +28,12 @@ var
   imageID : ImTextureID
   imageAspect : float
   imagePath : string
+  showFontSelector = false
+  showStyleSelector = false
 
   startedProcess : Process
 
   style : ptr ImGuiStyle
-  outputBuffer : array[30000,char]
 
 
 type
@@ -45,7 +47,9 @@ var
   lastHistoryCount = 0
   historySelection = 0
 
-proc clearInput()= currentInput = currentInput.substr(0,0)
+proc clearInput()= 
+  currentInput = currentInput.substr(0,0)
+  cursor = 0
 
 proc getFullCommand():string= currentInput.substr(1,currentInput.high)
 
@@ -97,10 +101,6 @@ proc run() : seq[StyleLine]=
     return
   
   startedProcess = startProcess(fullCommand, options = {poUsePath,poEvalCommand})
-  if(startedProcess.waitForExit(100) == 0): 
-    var output = startedProcess.outputStream.readAll()
-    var parsedOutput = parseAnsiDisplayText(output)
-    result.add(parsedOutput)
 
 proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32, mods: int32):void{.cdecl.}=
   if(action == GLFW_RELEASE): return
@@ -113,13 +113,16 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
       if(currentInput.len>1):
           #Word Deletion
           if(controlPressed):
-            var lastIsLetter = Letters.contains(currentInput[currentInput.high])
-            for x in countdown(currentInput.high-1,0):
+            var lastIsLetter = Letters.contains(currentInput[cursor])
+            for x in countdown(cursor-1,0):
               if(lastIsLetter != Letters.contains(currentInput[x])): 
-                currentInput = currentInput.substr(0,x)
+                if(cursor < currentInput.high): currentInput = currentInput.substr(0,x) & currentInput.substr(cursor,currentInput.high)
+                else:currentInput = currentInput.substr(0,x)
+                cursor = x
                 break
           else: 
-            currentInput = currentInput.substr(0,currentInput.high - 1)
+            if(cursor < currentInput.high): currentInput = currentInput.substr(0,cursor-1) & currentInput.substr(cursor+1,currentInput.high)
+            else:currentInput = currentInput.substr(0,cursor-1)
             cursor -= 1
 
     of GLFWKey.Enter:
@@ -144,21 +147,28 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
       if(not shiftPressed and cursor > 1):cursor -= 1
 
     of GLFWKey.Up:
-      if(inputNotSelected()): selected = (selected - 1 + viableCommands.len) %% viableCommands.len
-      elif(history.len > 0 and history[history.high].text.len > 0 and shiftPressed):
+      if(inputNotSelected() and shiftPressed): selected = (selected - 1 + viableCommands.len) %% viableCommands.len
+      elif(history.len > 0 and history[history.high].text.len > 0 and not shiftPressed):
         currentInput = history[history.high - historySelection].text[0].words[0].text
         if(history.high - historySelection > 0): historySelection += 1
 
     of GLFWKey.Down:
-      if(hasOptions() and not shiftPressed): selected = (selected + 1 + viableCommands.len) %% viableCommands.len
-      elif(historySelection > 0 and shiftPressed):
+      if(hasOptions() and shiftPressed): selected = (selected + 1 + viableCommands.len) %% viableCommands.len
+      elif(historySelection > 0 and not shiftPressed):
         currentInput = history[history.high - historySelection].text[0].words[0].text
         historySelection -= 1
     
     of GLFWKey.C:
       if(controlPressed):
-        if(processRunning()): startedProcess.close()
-        quit(0)
+        if(processRunning()): startedProcess.terminate()
+        else: quit(0)
+
+    of GLFWKey.F1:
+      showFontSelector = not showFontSelector
+    
+    of GLFWKey.F2:
+      showStyleSelector = not showStyleSelector
+
     else:discard
 
   #Update Text
@@ -169,7 +179,10 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
 proc onChar(window: GLFWWindow, codepoint: uint32, mods: int32): void {.cdecl.}=
   var rune = Rune(codepoint)
   if((mods and GLFWModShift) == GLFWModShift): rune = rune.toUpper()
-  currentInput.add(rune)
+  var place = cursor + 1
+  if(place < currentInput.len and place > 1):
+    currentInput.insert($rune,place)
+  else: currentInput &= rune
   cursor += 1
 
 proc drawInfo(width : float32)=
@@ -245,13 +258,63 @@ proc drawExtensions(width : float32, flag: ImGuiWindowFlags)=
       drawImage(selectedPath,width,flag)
     else: discard
 
+proc drawHistory()=
+  ##Draw responses
+  for ele in history:
+    drawAnsiText(ele.text)
+  if(lastHistoryCount != history.len):
+    igSetScrollY(100000000)
+    lastHistoryCount = history.len
+
 proc drawRunningProcces()=
   var stream = startedProcess.outputStream
-  var len = stream.readData(outputBuffer.addr,outputBuffer.len)
-  var outputString : string 
-  for x in 0..len-1: outputString &= outputBuffer[x]
-  var parsed = parseAnsiDisplayText(outputString)
+  var output = ""
+  var lastLine = ""
+  var count = 0
+  while not stream.atEnd:
+    var line = stream.readLine()
+    output &= fmt"{line}\n"
+    lastLine = line
+  var parsed = parseAnsiDisplayText(output)
   drawAnsiText(parsed)
+
+proc drawCurrentInput()=
+  var styledLine : seq[StyleLine]
+  var styleLine = StyleLine()
+  var workingDir = newStyledText(getCurrentDir(),newStyle())
+  workingDir.style.colourFG = newCol(0,1,1)
+  var caret = newStyledText($currentInput[0],newStyle())
+  caret.style.colourFG = newCol(1,1,0)
+  var commandText = newStyledText(getFullCommand(),newStyle())
+
+  styleLine.words.add(workingDir)
+  styleLine.words.add(caret)
+  styleLine.words.add(commandText)
+  styledLine.add(styleLine)
+  drawAnsiText(styledLine)
+  igSameLine(0,0)
+  var pos = igGetCursorPos()
+
+  pos.x -= igCalcTextSize(currentInput[(cursor)..currentInput.high-1]).x
+  igSetNextWindowPos(pos,ImGuiCond.Always)
+  igBeginChild("cursor", ImVec2(x:igGetFontSize(),y:igGetTextLineHeight()))
+  igTextColored(newCol(1,1,0),"_")
+  igEndChild()
+
+proc processStdout()=
+  if(startedProcess != nil and startedProcess.peekExitCode() != -1):
+    var newHistObj = addr history[history.high]
+    for x in parseAnsiDisplayText(startedProcess.outputStream.readall()):
+      newHistObj.text.add(x)
+    startedProcess = nil
+
+proc loadFonts()=
+  var fonts = loadFontFile()
+  var io = igGetIO()
+  if(fonts.len == 0): io.fonts.addFontDefault()
+  for x in fonts:
+    io.fonts.addFontFromFileTTF(x.path,x.size.toFloat)
+  io.fonts.build()
 
 proc main() =
   assert glfwInit()
@@ -279,31 +342,28 @@ proc main() =
   style = igGetStyle()
 
   igStyleColorsDark(style)
-
+  loadFonts()
   var flag = ImGuiWindowFlags(ImGuiWindowFlags.NoDecoration.int or ImGuiWindowFlags.AlwaysAutoResize.int or ImGuiWindowFlags.NoMove.int)
   while not w.windowShouldClose:
+
 
     glfwPollEvents()
     igOpenGL3NewFrame()
     igGlfwNewFrame()
     igNewFrame()
+
     # Simple window
     var width,height : int32
     getWindowSize(w,addr width, addr height)
     igSetNextWindowSize(ImVec2(x:float32(width),y: float32(height)),ImGuiCond.Always)
     igSetNextWindowPos(ImVec2(x:0,y:0),ImGuiCond.Always)
     igBegin("Interactive Terminal", flags = flag)
+    if(showFontSelector): igShowFontSelector("Choose a font")
+    if(showStyleSelector): igShowStyleEditor()
     if(startedProcess == nil or not startedProcess.running):
-      #Draw responses
-      for ele in history:
-        drawAnsiText(ele.text)
-      if(lastHistoryCount != history.len):
-        igSetScrollY(100000000)
-        lastHistoryCount = history.len
-
-      igText(currentInput)
-      igSameLine(0,0)
-      igTextColored(ImVec4(x:1,y:1,z:0,w:1),"_")
+      drawHistory()
+     
+      drawCurrentInput()
 
       if(currentInput.len > 1 and currentInput != lastInput):
         selected = 0
@@ -315,16 +375,15 @@ proc main() =
 
       drawOptions()
 
-      drawInfo(width.toFloat)
-    
+      drawInfo(width.toFloat)    
     #else: drawRunningProcces()
-      
+    processStdout()
 
     igEnd()
 
     igRender()
 
-    glClearColor(0f,0f,0f, 1f)
+    glClearColor(0f,0f,0f, 0.5f)
     glClear(GL_COLOR_BUFFER_BIT)
 
     igOpenGL3RenderDrawData(igGetDrawData())
@@ -338,5 +397,7 @@ proc main() =
 
   w.destroyWindow()
   glfwTerminate()
+
+
 
 main()

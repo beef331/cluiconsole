@@ -15,19 +15,19 @@ proc newCol*(i : ImVec4): ImVec4 = ImVec4(x:i.x,y:i.y,z:i.z,w:1)
 type
     Style* = ref object
         colourFG* : ImVec4
-        colourBG : ImVec4
+        colourBG* : ImVec4
         styles : seq[EscapeCode]
 
 
     StyledText* = object
         text* : string
         selected* : bool
-        style : Style
+        style* : Style
 
     StyleLine* = object
         words*: seq[StyledText]
 
-    EscapeCode = enum
+    EscapeCode* = enum
         ResetAll = 0,
         Bold = 1,
         Dim = 2,
