@@ -19,7 +19,7 @@ var
   viableCommands : seq[StyleLine]
   dropWidth : float32 = 0
   dropHeight : float32 = 0
-  maxDrop : int = 20
+  maxDrop : int = 10
   argWidth : float = 0
   selected = 0
   cursor = 0
@@ -55,21 +55,36 @@ proc getFullCommand():string= currentInput.substr(1,currentInput.high)
 
 proc getCommand():string = currentInput.substr(1,currentInput.high).split(' ')[0]
 
-proc isPath():bool = dirExists(getCommand().splitFile().dir)
+proc commandHasPaths(): bool = 
+  var split = getCommand().splitFile()
+  var splitString = currentInput.substr(0,cursor).split(" ")
+  result = dirExists(split.dir)
+  if(splitString.len > 1): result = result or dirExists(splitString[splitString.high].splitFile().dir)
+
+proc getPaths(): string = 
+  var split = getFullCommand().splitFile()
+  if(dirExists(split.dir)): result = getFullCommand()
+  var splitString = getFullCommand().substr(0,cursor).split(" ")
+  if(splitString.len > 1):
+    var splitDir = splitString[splitString.high].splitFile()
+    if(dirExists(splitDir.dir)): result = splitString[splitString.high]
 
 proc getOptions(): string = 
   var command = getCommand()
-  if(isPath()):
-    var fileSplit = command.splitFile()
+  if(commandHasPaths()):
+    var fileSplit = getPaths().splitFile()
     return execCmdEx(fmt"ls {fileSplit.dir} | grep '^{fileSplit.name}' ").output
   return execCmdEx(fmt"ls /bin/ | grep '^{command}'").output
 
 proc appendSelection(): string = 
-  var split = getCommand().splitFile()
-  var dir = split.dir & "/"
-  if(dir == "//"): dir = "/"
-  result = fmt">{dir}{viableCommands[selected].words[0].text}"
-  if(dirExists(fmt"{dir}{viableCommands[selected].words[0].text}")): result &= "/"
+  var cmd = getFullCommand()
+  var subSection = cmd.substr(0,cursor)
+  var splitSubSect = subSection.split("/")
+  if(splitSubSect.len > 1):
+    splitSubSect[splitSubSect.high] = viableCommands[selected].words[0].text
+    result = ">"
+    for x in splitSubSect: result &= fmt"{x}/"
+    result &= cmd.substr(cursor + 1,cmd.high)
 
 proc getInfo(input : string): seq[StyleLine]=
   var tldr = execCmdEx(fmt"tldr {input}").output
@@ -126,10 +141,10 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
             cursor -= 1
 
     of GLFWKey.Enter:
-      if(hasOptions() and isPath()): 
+      if(hasOptions() and commandHasPaths() and shiftPressed): 
         currentInput = appendSelection()
         cursor = currentInput.high
-      elif(inputNotSelected() and not currentInput.contains(" ")): 
+      elif(inputNotSelected() and not currentInput.contains(" ") and shiftPressed): 
         currentInput = fmt">{viableCommands[selected].words[0].text}"
         cursor = currentInput.high
       elif(currentInput.len > 1):
@@ -140,7 +155,7 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
 
     of GLFWKey.Right:
       if(not shiftPressed and cursor < currentInput.high): cursor += 1
-      if(hasOptions() and isPath() and shiftPressed): currentInput = appendSelection()
+      if(hasOptions() and commandHasPaths() and shiftPressed): currentInput = appendSelection()
       elif(hasOptions() and shiftPressed): currentInput = fmt">{viableCommands[selected].words[0].text}"
 
     of GLFWKey.Left:
@@ -200,12 +215,19 @@ proc drawOptions()=
   ##Draws path directiories, and auto complete
   if(hasOptions() and currentInput.len > 1):
     viableCommands[selected].words[0].selected = true
-    var height = (viableCommands.len.toFloat() + 1) * igGetFontSize() + igGetFontSize() / 2
-    dropHeight = min(height,maxDrop.toFloat * igGetFontSize() + igGetFontSize() / 2)
+    dropHeight = min((viableCommands.len.toFloat + 1) * igGetTextLineHeightWithSpacing(), maxDrop.toFloat * igGetTextLineHeightWithSpacing())
     #Get Max Width
     for x in viableCommands:
-        dropWidth = max(x.words[0].text.len.toFloat * igGetFontSize() * 0.75,dropWidth)
+        dropWidth = max(igCalcTextSize(x.words[0].text & "  ").x,dropWidth)
     #Get small segment to draw, else draw everything
+    var pos = igGetCursorPos()
+    pos.x = igCalcTextSize(getCurrentDir() & ">").x
+    for x in countdown(cursor,1):
+      if(currentInput[x] == ' ' or currentInput[x] == '/'):
+        pos.x += igCalcTextSize(currentInput.substr(0,x-1)).x
+        break
+    igSetNextWindowPos(pos,ImGuiCond.Always)
+    igBeginChild("autoComplete",size = ImVec2(x:dropWidth,y:dropHeight), border = true)
     if(viableCommands.len > maxDrop):
       var toDraw : seq[StyleLine]
       for x in 0..maxDrop:
@@ -213,6 +235,7 @@ proc drawOptions()=
         toDraw.add(viableCommands[index])
       drawAnsiText(toDraw)
     else: drawAnsiText(viableCommands)
+    igEndChild()
 
 proc drawImage(selectedPath : string, width : float32,flag : ImGuiWindowFlags)=
   ##Draws image and loads it if supposed to draw new
@@ -239,24 +262,28 @@ proc drawImage(selectedPath : string, width : float32,flag : ImGuiWindowFlags)=
   imageSize.y = imageSize.x
   imageSize.x *= imageAspect
 
-  igSetNextWindowFocus()
-  igSetNextWindowSize(imageSize,ImGuiCond.Always)
-  igSetNextWindowPos(ImVec2(x:(dropWidth + igGetFontSize()),y : (igGetFontSize() * 2f)),ImGuiCond.Always)
-  igBegin("Image Viewer",flags = flag)
+  igBeginChild("Image Viewer", imageSize)
   igImage(imageID,imageSize)
-  igEnd()
+  igEndChild()
 
 proc drawExtensions(width : float32, flag: ImGuiWindowFlags)=
-  var selectedPath = getCommand()
-  if(not fileExists(selectedPath) and hasOptions()): selectedPath = selectedPath.splitFile().dir & "/" & viableCommands[selected].words[0].text
-  if(fileExists(selectedPath)):
-    var ext = ""
-    for x in countdown(selectedPath.high,0):
-      if(selectedPath[x] == '.'): ext = selectedPath.substr(x+1,selectedPath.high)
-    case ext.toLower():
-    of "png","jpeg","jpg","tiff":
-      drawImage(selectedPath,width,flag)
-    else: discard
+  ##Draws specific elements per type
+  
+  var selectedPath = getPaths()
+  #Search all possible paths
+  if(not fileExists(selectedPath) and hasOptions()):
+    let selectionRelativeToCurrent = getCurrentDir() & viableCommands[selected].words[0].text
+    let selectionAbsolute = fmt"{selectedPath.splitFile().dir}/{viableCommands[selected].words[0].text}"
+    if(fileExists(selectionRelativeToCurrent)): selectedPath = selectionRelativeToCurrent
+    elif(fileExists(selectionAbsolute)): selectedPath = selectionAbsolute
+  
+  var ext = ""
+  for x in countdown(selectedPath.high,0):
+    if(selectedPath[x] == '.'): ext = selectedPath.substr(x + 1,selectedPath.high)
+  case ext.toLower():
+  of "png","jpeg","jpg","tiff":
+    drawImage(selectedPath,width,flag)
+  else: discard
 
 proc drawHistory()=
   ##Draw responses
@@ -371,9 +398,9 @@ proc main() =
         dropHeight = 0
         viableCommands = parseAnsiInteractText(getOptions())
 
+      drawOptions()
       drawExtensions(width.toFloat, flag)
 
-      drawOptions()
 
       drawInfo(width.toFloat)    
     #else: drawRunningProcces()
@@ -397,7 +424,5 @@ proc main() =
 
   w.destroyWindow()
   glfwTerminate()
-
-
 
 main()
