@@ -5,13 +5,11 @@ import osproc
 import os
 import strformat
 import strutils
-import nre
 import unicode
 import sdl2/image
 import streams
-import times
 import fontLoader
-
+import times
 
 var 
   currentInput = ">"
@@ -36,6 +34,8 @@ var
   startedProcess : Process
 
   style : ptr ImGuiStyle
+  readBuffer : string 
+  readThread : Thread[void]
 
 
 
@@ -102,6 +102,13 @@ proc inputNotSelected : bool = hasOptions() and not getCommand().contains(viable
 
 proc processRunning : bool = startedProcess != nil and startedProcess.running
 
+proc processStdout(){.thread.}=
+  while processRunning():
+    readBuffer = ""
+    var stream = startedProcess.outputStream
+    while not stream.atEnd:
+      readBuffer &= stream.readChar()
+
 proc run() : seq[StyleLine]=
   var baseCommand = getCommand()
   var fullCommand = getFullCommand()
@@ -119,15 +126,18 @@ proc run() : seq[StyleLine]=
       var dir =  split[1].replace("~",getHomeDir())
       if(dirExists(dir)): setCurrentDir(dir)
     return
-  
+
   startedProcess = startProcess(fullCommand, options = {poUsePath,poEvalCommand})
+  createThread(readThread,processStdout)
+  readBuffer = ""
 
 proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32, mods: int32):void{.cdecl.}=
   if(action == GLFW_RELEASE): return
   let controlPressed : bool = (mods and GLFWModControl) == GLFWModControl
   let shiftPressed : bool = (mods and GLFWModShift) == GLFWModShift
-
   let lastSelected = selected
+  if(processRunning()): 
+    startedProcess.inputStream.write(key)
   case(key.toGLFWKey()):
     of GLFWKey.Backspace:
       if(currentInput.len>1):
@@ -152,7 +162,7 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
       elif(inputNotSelected() and not currentInput.contains(" ") and shiftPressed): 
         currentInput = fmt">{viableCommands[selected].words[0].text}"
         cursor = currentInput.high
-      elif(currentInput.len > 1):
+      elif(currentInput.len > 1 and not processRunning()):
         historySelection = 0
         history.add(newHistory(run()))
         historyChanged = true
@@ -181,7 +191,8 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
     
     of GLFWKey.C:
       if(controlPressed):
-        if(processRunning()): startedProcess.terminate()
+        if(processRunning()):
+          startedProcess.terminate()
         else: quit(0)
 
     of GLFWKey.F1:
@@ -198,13 +209,18 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
     viableCommands[selected].words[0].selected = true
 
 proc onChar(window: GLFWWindow, codepoint: uint32, mods: int32): void {.cdecl.}=
+
   var rune = Rune(codepoint)
   if((mods and GLFWModShift) == GLFWModShift): rune = rune.toUpper()
-  var place = cursor + 1
-  if(place < currentInput.len and place > 1):
-    currentInput.insert($rune,place)
-  else: currentInput &= rune
-  cursor += 1
+  if(processRunning()):
+    startedProcess.inputStream.write(codepoint)
+
+  else:
+    var place = cursor + 1
+    if(place < currentInput.len and place > 1):
+      currentInput.insert($rune,place)
+    else: currentInput &= rune
+    cursor += 1
 
 proc drawInfo(width : float32)=
   ##Draws information about the command to ease use
@@ -306,16 +322,14 @@ proc drawHistory()=
     historyChanged = false
 
 proc drawRunningProcces()=
-  var stream = startedProcess.outputStream
-  var output = ""
-  var lastLine = ""
-  var count = 0
-  while not stream.atEnd:
-    var line = stream.readLine()
-    output &= fmt"{line}\n"
-    lastLine = line
-  var parsed = parseAnsiDisplayText(output)
-  drawAnsiText(parsed)
+  var file = open("output",fmWrite)
+  file.write(readBuffer)
+  file.close()
+  var size = igGetContentRegionAvail()
+  igSetNextWindowPos(ImVec2(x:0,y:0),ImGuiCond.Always)
+  igBeginChild("Terminal Emulation",size)
+  drawAnsiText(parseAnsiDisplayText(readBuffer))
+  igEndChild()
 
 proc drawCurrentInput()=
   var styledLine : seq[StyleLine]
@@ -340,14 +354,6 @@ proc drawCurrentInput()=
   igTextColored(newCol(1,1,0),"_")
   igEndChild()
 
-proc processStdout()=
-  if(startedProcess != nil and startedProcess.peekExitCode() != -1):
-    var newHistObj = addr history[history.high]
-    for x in parseAnsiDisplayText(startedProcess.outputStream.readall()):
-      newHistObj.text.add(x)
-    startedProcess = nil
-    historyChanged = true
-
 proc loadFonts()=
   var fonts = loadFontFile()
   var io = igGetIO()
@@ -364,7 +370,7 @@ proc main() =
   glfwWindowHint(GLFWOpenglForwardCompat, GLFW_TRUE)
   glfwWindowHint(GLFWOpenglProfile, GLFW_OPENGL_CORE_PROFILE)
   glfwWindowHint(GLFWResizable, GLFW_TRUE)
-  var w: GLFWWindow = glfwCreateWindow(800, 600)
+  var w: GLFWWindow = glfwCreateWindow(1024, 768)
   if w == nil:
     quit(-1)
   
@@ -384,6 +390,7 @@ proc main() =
   igStyleColorsDark(style)
   loadFonts()
   var flag = ImGuiWindowFlags(ImGuiWindowFlags.NoDecoration.int or ImGuiWindowFlags.AlwaysAutoResize.int or ImGuiWindowFlags.NoMove.int)
+  var lastBuffer : string
   while not w.windowShouldClose:
 
 
@@ -398,25 +405,31 @@ proc main() =
     igSetNextWindowSize(ImVec2(x:float32(width),y: float32(height)),ImGuiCond.Always)
     igSetNextWindowPos(ImVec2(x:0,y:0),ImGuiCond.Always)
     igBegin("Interactive Terminal", flags = flag)
+
     if(showFontSelector): igShowFontSelector("Choose a font")
     if(showStyleSelector): igShowStyleEditor()
-    drawHistory()
-     
-    drawCurrentInput()
 
-    if(currentInput.len > 1 and currentInput != lastInput):
-      selected = 0
-      dropWidth = 0
-      dropHeight = 0
-      viableCommands = parseAnsiInteractText(getOptions())
+    if(startedProcess == nil or not startedProcess.running):
 
-    drawExtensions(width.toFloat, flag)
-    drawOptions()
+      drawHistory()
 
-    drawInfo(width.toFloat)    
+      drawCurrentInput()
 
-    processStdout()
+      if(currentInput.len > 1 and currentInput != lastInput):
+        selected = 0
+        dropWidth = 0
+        dropHeight = 0
+        viableCommands = parseAnsiInteractText(getOptions())
 
+      drawExtensions(width.toFloat, flag)
+      drawOptions()
+
+      drawInfo(width.toFloat)    
+
+    else:
+      if(lastbuffer != readBuffer):
+        drawTerminal(readBuffer)
+        lastBuffer = readBuffer
     igEnd()
 
     igRender()

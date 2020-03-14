@@ -153,9 +153,8 @@ proc parseAnsiDisplayText*(input: string): seq[StyleLine]=
                 #Find code string
                 currentPos += 2
                 var codeString = ""
-                while currentPos < line.len and not Letters.contains(line[currentPos]):
+                while currentPos < line.len and line[currentPos] != 'm':
                     if(currentPos > line.high): 
-                        echo line
                         break
                     codeString &= line[currentPos]
                     inc(currentPos)
@@ -171,7 +170,7 @@ proc parseAnsiDisplayText*(input: string): seq[StyleLine]=
                         elif(colourBGTable.contains(parsed)): currentStyle.colourBG = colourBGTable[parsed]
                         else: currentStyle.styles.add(EscapeCode(parsed))
                     except:
-                        echo x
+                        discard
 
             else: currentStream &= line[currentPos]
             inc(currentPos)
@@ -209,3 +208,127 @@ proc drawAnsiText*(input : seq[StyleLine])=
             if(word.selected): igTextColored(colourFGTable[GreenFG.int],word.text)
             else: igTextColored(word.style.colourFG,word.text)
             sameLine = true
+
+proc parseStyle(input : string): Style=
+    var sanatized = input.substr(1,input.high-1)
+    result = Style()
+    for x in sanatized.split(";"):
+        try:
+            var code = EscapeCode(parseInt(x))
+            if(colourFGTable.contains(code.int)): result.colourFG = colourFGTable[code.int]
+            elif(colourBGTable.contains(code.int)): result.colourBG = colourBGTable[code.int]
+            else: result.styles.add(code)
+        except : echo x
+
+
+proc moveUp(input : string): float32 =
+    if(input.len > 2):
+        try : 
+            var yOffset = parseInt(input.split('A')[0].replace("["))
+            return yOffset.toFloat()
+        except ValueError:
+            return 0
+
+proc moveDown(input : string): float32 =
+    if(input.len > 2):
+        try : 
+            var yOffset = parseInt(input.split('B')[0].replace("["))
+            return -yOffset.toFloat()
+        except ValueError:
+            return 0
+
+proc moveRight(input : string): float32 =
+    if(input.len > 2):
+        try : 
+            var yOffset = parseInt(input.split('C')[0].replace("["))
+            return yOffset.toFloat()
+        except ValueError:
+            return 0
+
+proc moveLeft(input : string): float32 =
+    if(input.len > 2):
+        try : 
+            var yOffset = parseInt(input.split('D')[0].replace("["))
+            return yOffset.toFloat()
+        except ValueError:
+            return 0
+
+proc moveTo(input : string): ImVec2=
+    if(input.len == 1): return  ImVec2(x:0,y:0)
+    var params = input.replace("[").split(";")
+    if(params.len == 2):
+        try:
+            var x = parseFloat(params[0])
+            var y = parseFloat(params[1])
+            return ImVec2(x:x,y:y)
+        except : discard
+
+proc moveToColumn(input : string): float32=
+    try : 
+        var yOffset = parseInt(input)
+        return yOffset.toFloat()
+    except ValueError:
+        return 0
+
+proc drawTerminal*(input : string)=
+    var cursorPos = ImVec2(x:0,y:0)
+    let width = 80
+
+    var storedPos : ImVec2
+    var splitOutput = input.split("\e")
+
+    for x in splitOutput:
+        if x.len == 0: continue
+        var index = -1
+        for searchIndex in 0..<x.len: 
+            if(x[searchIndex].isAlphaNumeric() and not x[searchIndex].isDigit()): 
+                index = searchIndex
+                break
+        if(index == -1): continue
+
+        var captured = x[1..index-1]
+        case x[index]:
+        of 'm':
+            var text = x.substr(index+1)
+            var style = parseStyle(captured)
+            var tempCursor = cursorPos
+            tempCursor.x *= igGetFontSize()
+            tempCursor.y *= igGetFontSize()
+            igSetCursorPos(tempCursor)
+            igText(text)
+            cursorPos.x += text.len.toFloat
+            if(cursorPos.x >= width.toFloat):
+                cursorPos.y += 1
+                cursorPos.x = cursorPos.x - width.toFloat
+
+
+        of 'A': cursorPos.y += moveUp(captured)
+
+        of 'B': cursorPos.y += moveUp(captured)
+
+        of 'C': cursorPos.y += moveUp(captured)
+
+        of 'D': cursorPos.y += moveUp(captured)
+
+        of 'H','f': cursorPos = moveTo(x[0..index-1])
+
+        of 'M' : echo "Scroll Down"
+        of 'E' : echo "Move Down one"
+        of '7' : echo "Save Cursor and style"
+        of '8' : echo "Restore to last"
+        of 'g' : echo "Clear Tabs"
+        of '3' : echo "Double Height Letters, top half"
+        of '4' : echo "Double Height Letters, bot half"
+        of '5' : echo "Single width ,single height"
+        of '6' : echo "Double width, single height"
+        of 'K' : echo "Clear lines"
+        of 'J' : echo "Clear from cursor"
+        of 'n' : echo "status"
+        of 'R' : echo "Cursor position"
+        of 'c' : echo "terminal"
+        of 's': storedPos = cursorPos
+        of 'u': cursorPos = storedPos
+        of 'G': cursorPos.x = moveToColumn(captured)
+        else:
+            echo x[index]
+            discard
