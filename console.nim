@@ -105,10 +105,8 @@ proc processRunning : bool = startedProcess != nil and startedProcess.running
 proc processStdout(){.thread.}=
   while processRunning():
     readBuffer = ""
-    var stream = startedProcess.outputStream
-    while not stream.atEnd:
-      readBuffer &= stream.readChar()
-
+    while not startedProcess.outputStream.atEnd:
+      readBuffer &= startedProcess.outputStream.readChar()
 proc run() : seq[StyleLine]=
   var baseCommand = getCommand()
   var fullCommand = getFullCommand()
@@ -136,8 +134,9 @@ proc onKeyChange(window: GLFWWindow, key: int32, scancode: int32, action: int32,
   let controlPressed : bool = (mods and GLFWModControl) == GLFWModControl
   let shiftPressed : bool = (mods and GLFWModShift) == GLFWModShift
   let lastSelected = selected
-  if(processRunning()): 
-    startedProcess.inputStream.write(key)
+  
+  if(processRunning()): startedProcess.inputStream.write(key)
+
   case(key.toGLFWKey()):
     of GLFWKey.Backspace:
       if(currentInput.len>1):
@@ -212,10 +211,8 @@ proc onChar(window: GLFWWindow, codepoint: uint32, mods: int32): void {.cdecl.}=
 
   var rune = Rune(codepoint)
   if((mods and GLFWModShift) == GLFWModShift): rune = rune.toUpper()
-  if(processRunning()):
-    startedProcess.inputStream.write(codepoint)
 
-  else:
+  if(not processRunning()):
     var place = cursor + 1
     if(place < currentInput.len and place > 1):
       currentInput.insert($rune,place)
@@ -390,7 +387,6 @@ proc main() =
   igStyleColorsDark(style)
   loadFonts()
   var flag = ImGuiWindowFlags(ImGuiWindowFlags.NoDecoration.int or ImGuiWindowFlags.AlwaysAutoResize.int or ImGuiWindowFlags.NoMove.int)
-  var lastBuffer : string
   while not w.windowShouldClose:
 
 
@@ -427,9 +423,8 @@ proc main() =
       drawInfo(width.toFloat)    
 
     else:
-      if(lastbuffer != readBuffer):
         drawTerminal(readBuffer)
-        lastBuffer = readBuffer
+
     igEnd()
 
     igRender()

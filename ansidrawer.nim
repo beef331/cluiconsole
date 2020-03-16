@@ -220,50 +220,21 @@ proc parseStyle(input : string): Style=
             else: result.styles.add(code)
         except : echo x
 
-
-proc moveUp(input : string): float32 =
-    if(input.len > 2):
-        try : 
-            var yOffset = parseInt(input.split('A')[0].replace("["))
-            return yOffset.toFloat()
-        except ValueError:
-            return 0
-
-proc moveDown(input : string): float32 =
-    if(input.len > 2):
-        try : 
-            var yOffset = parseInt(input.split('B')[0].replace("["))
-            return -yOffset.toFloat()
-        except ValueError:
-            return 0
-
-proc moveRight(input : string): float32 =
-    if(input.len > 2):
-        try : 
-            var yOffset = parseInt(input.split('C')[0].replace("["))
-            return yOffset.toFloat()
-        except ValueError:
-            return 0
-
-proc moveLeft(input : string): float32 =
-    if(input.len > 2):
-        try : 
-            var yOffset = parseInt(input.split('D')[0].replace("["))
-            return yOffset.toFloat()
-        except ValueError:
-            return 0
-
-proc moveTo(input : string): ImVec2=
-    if(input.len == 1): return  ImVec2(x:0,y:0)
+proc moveTo(input : string): (bool,ImVec2)=
+    #Tab
+    if(input.len == 0): return (true,ImVec2(x : 0,y : 0))
+    #Move to zero,zero
+    if(input.len == 1): return (false,ImVec2(x:0,y:0))
     var params = input.replace("[").split(";")
+    #Move to pos
     if(params.len == 2):
         try:
             var x = parseFloat(params[0])
             var y = parseFloat(params[1])
-            return ImVec2(x:x,y:y)
+            return (false,ImVec2(x:x,y:y))
         except : discard
 
-proc moveToColumn(input : string): float32=
+proc move(input : string): float32=
     try : 
         var yOffset = parseInt(input)
         return yOffset.toFloat()
@@ -271,9 +242,15 @@ proc moveToColumn(input : string): float32=
         return 0
 
 proc drawTerminal*(input : string)=
+    var io = igGetIO()
     var cursorPos = ImVec2(x:0,y:0)
-    let width = 80
-
+    let width = 80.0
+    let height =  (igGetWindowSize().y/igGetTextLineHeightWithSpacing())
+    putEnv("COLUMNS",$int(width))
+    putEnv("LINES",$int(height))
+    let lineHeight = igGetTextLineHeightWithSpacing()
+    igBeginChild("Terminal Emulation", size = ImVec2(x : width * igGetFontSize() ,y : height * lineHeight ), border = true)
+    igText(repeat("c",int(width)))
     var storedPos : ImVec2
     var splitOutput = input.split("\e")
 
@@ -293,27 +270,34 @@ proc drawTerminal*(input : string)=
             var style = parseStyle(captured)
             var tempCursor = cursorPos
             tempCursor.x *= igGetFontSize()
-            tempCursor.y *= igGetFontSize()
+            tempCursor.y *= lineHeight
             igSetCursorPos(tempCursor)
-            igText(text)
-            cursorPos.x += text.len.toFloat
-            if(cursorPos.x >= width.toFloat):
-                cursorPos.y += 1
-                cursorPos.x = cursorPos.x - width.toFloat
+            if(text.len > 0): 
+                igText(text)
+                if(cursorPos.x + text.len.toFloat >= width):
+                    cursorPos.y += 1
+                    cursorPos.x = abs(cursorPos.x - width)
+                cursorPos.x += text.len.toFloat + 1
+            
 
+        of 'A': cursorPos.y -= move(captured)
 
-        of 'A': cursorPos.y += moveUp(captured)
+        of 'B': cursorPos.y += move(captured)
 
-        of 'B': cursorPos.y += moveUp(captured)
+        of 'C': cursorPos.x += move(captured)
 
-        of 'C': cursorPos.y += moveUp(captured)
+        of 'D': cursorPos.x -= move(captured)
 
-        of 'D': cursorPos.y += moveUp(captured)
-
-        of 'H','f': cursorPos = moveTo(x[0..index-1])
+        of 'H','f': 
+            #If true we add pos, else we move to
+            var movePos = moveTo(x[0..index-1])
+            if(movePos[0]):
+                cursorPos.x += movePos[1].x
+                cursorPos.y += movePos[1].y
+            else: cursorPos = movePos[1]
 
         of 'M' : echo "Scroll Down"
-        of 'E' : echo "Move Down one"
+        of 'E' : cursorPos.y += 1
         of '7' : echo "Save Cursor and style"
         of '8' : echo "Restore to last"
         of 'g' : echo "Clear Tabs"
@@ -328,7 +312,15 @@ proc drawTerminal*(input : string)=
         of 'c' : echo "terminal"
         of 's': storedPos = cursorPos
         of 'u': cursorPos = storedPos
-        of 'G': cursorPos.x = moveToColumn(captured)
+        of 'G': cursorPos.x = move(captured)
+        of 'd': cursorPos.y = move(captured)
+        of 'a': cursorPos.x += move(captured)
+        of '@': echo "Insert blank chars"
+        of 'L': echo "Insert blank lines"
+        of 'r': echo captured
+        of 'l': echo "this does something"
+        of 'h': echo "This also does something"
         else:
             echo x[index]
             discard
+    igEndChild()
