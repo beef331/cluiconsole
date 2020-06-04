@@ -1,4 +1,3 @@
-import ansidrawer
 import os
 import nre
 import strformat
@@ -8,7 +7,6 @@ type
     Font = object
         path* : string
         size* : int
-        style* : EscapeCode
 
 let fontMatch = re".*=.*:\d."
 let nameMatch = re".*="
@@ -54,17 +52,9 @@ proc loadFontFile*(): seq[Font]=
                         except:
                             echo fmt"{nameString} size is incorrect"
                             continue
-                        var style = 0.EscapeCode
-
-                        case(nameString):
-                        of "normal": discard
-                        of "thin" : style = EscapeCode.Dim
-                        of "bold" : style = EscapeCode.Bold
-                        else: 
-                            echo fmt"{nameString}, must be one of normal,thin,bold"
 
                         if(fileExists(pathString)):
-                            result.add(Font(path:pathString,size:size,style:style))
+                            result.add(Font(path:pathString,size:size))
 
                     else: return result
     else:
