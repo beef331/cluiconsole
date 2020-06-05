@@ -13,6 +13,7 @@ import nim_pty
 
 converter toImVec2(a: (int32, int32)): ImVec2 = ImVec2(x: a[0].float32, y: a[1].float32)
 
+const TIOCSCTTY: uint = 0x540E
 
 type
     ModsDown = enum
@@ -65,17 +66,18 @@ proc intializePty()=
     of 0:
         echo "Forked Succesfully"
         discard close(pty.master)
+        discard ioctl(pty.slave, TIOCSCTTY)
         discard setsid()
         discard dup2(pty.slave,0)
         discard dup2(pty.slave,1)
         discard dup2(pty.slave,2)
         discard close(pty.slave)
-        discard execle("/bin/bash","TERM=cluionsole")
+        discard execle("/bin/bash","bash",nil)
     of -1:
         echo "Forking failed, time to use a spoon."
     else:
         discard close(pty.slave)
-        echo "Congrats, it's a girl!"
+        echo "Master initalized"
     currentInput.writtenInput = ""
 
 intializePty()
@@ -87,6 +89,8 @@ proc onKeyInput(window: GLFWWindow, key: int32, scancode: int32, action: int32,
             GLFWRepeat or GLFWPress)) > 0):
         currentInput.writtenInput = currentInput.writtenInput[0..currentInput.writtenInput.high-1]
     if(GLFWKey.Enter == key and (action and GLFWPress) > 0 ):
+        
+        currentInput.writtenInput = ""
         discard
 
 
