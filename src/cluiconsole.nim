@@ -37,16 +37,15 @@ proc `+=`(a: var set[ModsDown], b: ModsDown) = a = a + {b}
 var
     currentInput = Input(leadingSymbol : ">")
     wSize: (int32, int32)
+    pty = Pty()
+    slaveFile : File
+    buffer : array[1,byte]
 
 let 
     wflags = ImGuiWindowFlags(ImGuiWindowFlags.NoDecoration.int or
                 ImGuiWindowFlags.AlwaysAutoResize.int or
                 ImGuiWindowFlags.NoMove.int)
-var pty = Pty()
-pty.master = openPt(O_RDRW)        
-if(unlockPt(pty.master) == -1): quit "pt not unlocked"
-if(grantPt(pty.master) == -1): quit "pt not granted"
-pty.slave = open($ptsName(pty.master)).getFileHandle()
+
 
 proc updateFrameSize(w: GlfwWindow) =
     getWindowSize(w, wSize[0].addr, wSize[1].addr)
@@ -61,41 +60,50 @@ proc modsHeld(mods: int32): set[ModsDown] =
     if((mods and GLFWModNumLock) == 0): result += mdNumLock
 
 proc intializePty()=
+
+    pty.master = openpt(O_RDRW)
+
+    #Open up the pt
+    if(unlockPt(pty.master) == -1): quit "pt not unlocked"
+    if(grantPt(pty.master) == -1): quit "pt not granted"
+    slaveFile = open($ptsName(pty.master))
+    pty.slave = slaveFile.getFileHandle()
+
     echo "Forking"
     case fork():
     of 0:
-        echo "Forked Succesfully"
         discard close(pty.master)
+        echo "Forked Succesfully"
         discard ioctl(pty.slave, TIOCSCTTY)
-        discard setsid()
-        discard dup2(pty.slave,0)
-        discard dup2(pty.slave,1)
-        discard dup2(pty.slave,2)
-        discard close(pty.slave)
-        discard execle("/bin/bash","bash",nil)
+        if(execve("/bin/bash", nil, nil) == -1): quit "we failed"
     of -1:
         echo "Forking failed, time to use a spoon."
     else:
         discard close(pty.slave)
         echo "Master initalized"
-    currentInput.writtenInput = ""
 
 intializePty()
 
 proc onKeyInput(window: GLFWWindow, key: int32, scancode: int32, action: int32,
         mods: int32): void {.cdecl.} =
+
     let modsPressed = modsHeld(mods)
     if(GLFWKey.Backspace == key and currentInput.writtenInput.len > 0 and (action and (
             GLFWRepeat or GLFWPress)) > 0):
         currentInput.writtenInput = currentInput.writtenInput[0..currentInput.writtenInput.high-1]
     if(GLFWKey.Enter == key and (action and GLFWPress) > 0 ):
-        
+        var toWrite = "\n"
+        discard write(pty.master,toWrite.addr,sizeof(toWrite))
         currentInput.writtenInput = ""
         discard
 
 
 proc onCharInput(window: GLFWWindow, codepoint: uint32): void{.cdecl.} =
     currentInput.writtenInput &= Rune(codepoint)
+    var toWrite = [108,115,13]
+    discard write(pty.master,toWrite[0].addr,sizeof(int))
+    discard write(pty.master,toWrite[1].addr,sizeof(int))
+    discard write(pty.master,toWrite[2].addr,sizeof(int))
 
 proc registerEvents(w: var GlfwWindow) =
     discard setCharCallback(w, onCharInput)
@@ -112,6 +120,7 @@ proc drawDirDropDown(basePath : string)=
         if(dirExists(head)):
             path = head
             break
+
     var textSize : ImVec2
     igCalcTextSizeNonUDT(textSize.addr,getCurrentDir() & currentInput.leadingSymbol)
     igSetCursorPosX(textSize.x)
@@ -129,10 +138,19 @@ proc drawDirDropDown(basePath : string)=
             currentInput.writtenInput = ""
     igEndChild()
 
-
 proc drawTerminal() =
+    var readable : TFdSet
+    var tim = TimeVal(tv_sec : posix.Time(0.clong), tv_usec : 10.clong)
+    FD_ZERO(readable)
+    FD_SET(pty.master,readable)
+
+    discard select(pty.master,readable.addr,nil,nil,tim.addr)
+
     igBegin("Terminal", flags = wflags)
     igText(getCurrentDir() & $currentInput)
+    if(read(pty.master,buffer.addr,1) > 0):
+        igText($chr(buffer[0]))
+
     drawDirDropDown(currentInput.writtenInput)
     igEnd()
 
